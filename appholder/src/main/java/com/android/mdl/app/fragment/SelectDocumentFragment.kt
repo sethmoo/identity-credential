@@ -1,14 +1,15 @@
 package com.android.mdl.app.fragment
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.view.*
-import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.result.contract.ActivityResultContracts.RequestPermission
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.navigation.fragment.findNavController
@@ -17,6 +18,7 @@ import com.android.mdl.app.adapter.DocumentAdapter
 import com.android.mdl.app.databinding.FragmentSelectDocumentBinding
 import com.android.mdl.app.document.DocumentManager
 import com.android.mdl.app.transfer.TransferManager
+import com.google.android.material.snackbar.Snackbar
 import org.jetbrains.anko.support.v4.toast
 
 
@@ -27,8 +29,10 @@ class SelectDocumentFragment : Fragment() {
 
     private val timeInterval = 2000 // # milliseconds passed between two back presses
     private var mBackPressed: Long = 0
+    private var mBinding:FragmentSelectDocumentBinding? = null
+    private var mInitialPermissionCheckComplete = false
 
-    private val appPermissions:Array<String> =
+    private val appPermissions: Array<String> =
         if (android.os.Build.VERSION.SDK_INT >= 31) {
             arrayOf(
                 Manifest.permission.BLUETOOTH_ADVERTISE,
@@ -39,6 +43,14 @@ class SelectDocumentFragment : Fragment() {
             arrayOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
             )
+        }
+
+    private val missingPermissions: List<String>
+        get() = appPermissions.filter { permission ->
+            ContextCompat.checkSelfPermission(
+                requireContext(),
+                permission
+            ) != PackageManager.PERMISSION_GRANTED
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,10 +77,10 @@ class SelectDocumentFragment : Fragment() {
     ): View {
         setHasOptionsMenu(true)
 
-        val binding = FragmentSelectDocumentBinding.inflate(inflater)
+        mBinding = FragmentSelectDocumentBinding.inflate(inflater)
         val adapter = DocumentAdapter()
-        binding.fragment = this
-        binding.documentList.adapter = adapter
+        mBinding!!.fragment = this
+        mBinding!!.documentList.adapter = adapter
 
         val documentManager = DocumentManager.getInstance(requireContext())
         // Call stop presentation to finish all presentation that could be running
@@ -80,20 +92,9 @@ class SelectDocumentFragment : Fragment() {
 
         adapter.submitList(documentManager.getDocuments().toMutableList())
 
-        val permissionsNeeded = appPermissions.filter { permission ->
-            ContextCompat.checkSelfPermission(
-                requireContext(),
-                permission
-            ) != PackageManager.PERMISSION_GRANTED
-        }
+        doPermissionsCheck()
 
-        if (permissionsNeeded.isNotEmpty()) {
-            permissionsLauncher.launch(
-                permissionsNeeded.toTypedArray()
-            )
-        }
-
-        return binding.root
+        return mBinding!!.root
     }
 
     override fun onCreateOptionsMenu(menu: Menu, inflater: MenuInflater) {
@@ -123,19 +124,55 @@ class SelectDocumentFragment : Fragment() {
         )
     }
 
-    private val permissionsLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-            permissions.entries.forEach {
-                Log.d(LOG_TAG, "permissionsLauncher ${it.key} = ${it.value}")
-
-                if (!it.value) {
-                    Toast.makeText(
-                        activity,
-                        "The ${it.key} permission is required for BLE",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    return@registerForActivityResult
-                }
+    override fun onResume() {
+        super.onResume()
+        if (missingPermissions.isNotEmpty()) {
+            mBinding?.btPresentDocuments?.isEnabled = false
+            // Don't show the snackbar before we've given the user the initial prompt
+            if (mInitialPermissionCheckComplete) {
+                showMissingPermissionSnackBar(missingPermissions.first())
             }
+        } else {
+            mBinding?.btPresentDocuments?.isEnabled = true
         }
+    }
+
+    private fun showMissingPermissionSnackBar(permission: String) {
+        if (mBinding == null) return
+
+        Snackbar.make(
+            mBinding!!.root,
+            "$permission permission is required",
+            Snackbar.LENGTH_INDEFINITE
+        )
+            .setAction("Open Settings") {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.fromParts("package", requireContext().packageName, null)
+                    )
+                )
+            }
+            .show()
+    }
+
+    private fun doPermissionsCheck() {
+        if (missingPermissions.isEmpty()) {
+            mBinding!!.btPresentDocuments.isEnabled = true
+        } else {
+            mBinding!!.btPresentDocuments.isEnabled = false
+            registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+                permissions.entries.forEach {
+                    Log.d(LOG_TAG, "permissionsLauncher ${it.key} = ${it.value}")
+
+                    mInitialPermissionCheckComplete = true
+                    mBinding!!.btPresentDocuments.isEnabled = it.value
+                    if (!it.value) {
+                        showMissingPermissionSnackBar(it.key)
+                        return@registerForActivityResult
+                    }
+                }
+            }.launch(missingPermissions.toTypedArray())
+        }
+    }
 }
